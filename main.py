@@ -13,7 +13,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 
 
-# -------------------- PAGE CONFIG --------------------
+# ---------------- PAGE CONFIG ---------------- #
 
 st.set_page_config(
     page_title="RAG Document Q&A",
@@ -24,121 +24,120 @@ st.set_page_config(
 st.title("📚 RAG Document Q&A with Groq")
 
 
-# -------------------- GROQ --------------------
+# ---------------- GROQ API ---------------- #
 
 try:
     groq_api_key = st.secrets["GROQ_API_KEY"]
 except Exception:
-    st.error("GROQ_API_KEY not found in Streamlit Secrets.")
+    st.error("GROQ_API_KEY not found in Streamlit Secrets")
     st.stop()
+
 
 llm = ChatGroq(
     api_key=groq_api_key,
-    model="llama3-8b-8192",
+    model="llama-3.1-8b-instant",
     temperature=0
 )
 
 
-# -------------------- PROMPT --------------------
+# ---------------- PROMPT ---------------- #
 
 prompt = ChatPromptTemplate.from_template(
     """
-    Answer the question only from the provided context.
+    Answer the question using ONLY the context below.
 
-    <context>
+    Context:
     {context}
-    </context>
 
-    Question: {input}
+    Question:
+    {input}
 
-    Provide a clear and concise answer.
+    Give a clear and concise answer.
     """
 )
 
 
-# -------------------- VECTOR DB --------------------
+# ---------------- VECTOR DATABASE ---------------- #
 
-def create_vector_embedding():
+@st.cache_resource
+def load_vector_store():
 
-    if "vectors" not in st.session_state:
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
-        with st.spinner("Creating Vector Database..."):
+    loader = PyPDFDirectoryLoader("research_papers")
 
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
+    docs = loader.load()
 
-            loader = PyPDFDirectoryLoader("research_papers")
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
 
-            docs = loader.load()
+    final_documents = text_splitter.split_documents(docs)
 
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200
-            )
+    vectors = FAISS.from_documents(
+        final_documents,
+        embeddings
+    )
 
-            final_documents = text_splitter.split_documents(docs)
+    return vectors
 
-            vectors = FAISS.from_documents(
-                final_documents,
-                embeddings
-            )
-
-            st.session_state.vectors = vectors
-
-        st.success("Vector Database Created Successfully!")
-
-
-# -------------------- BUTTON --------------------
 
 if st.button("Create Vector Database"):
-    create_vector_embedding()
+
+    with st.spinner("Creating Vector Database..."):
+        st.session_state.vectors = load_vector_store()
+
+    st.success("Vector Database Created Successfully!")
 
 
-# -------------------- QUERY INPUT --------------------
+# ---------------- QUERY ---------------- #
 
 user_prompt = st.text_input(
     "Ask a question from your research papers"
 )
 
-
-# -------------------- RETRIEVAL --------------------
-
 if user_prompt:
 
     if "vectors" not in st.session_state:
-        st.warning("Please create the Vector Database first.")
+        st.warning("Please click 'Create Vector Database' first.")
         st.stop()
 
-    document_chain = create_stuff_documents_chain(
-        llm,
-        prompt
-    )
+    try:
 
-    retriever = st.session_state.vectors.as_retriever()
+        document_chain = create_stuff_documents_chain(
+            llm,
+            prompt
+        )
 
-    retrieval_chain = create_retrieval_chain(
-        retriever,
-        document_chain
-    )
+        retriever = st.session_state.vectors.as_retriever()
 
-    start = time.process_time()
+        retrieval_chain = create_retrieval_chain(
+            retriever,
+            document_chain
+        )
 
-    response = retrieval_chain.invoke(
-        {"input": user_prompt}
-    )
+        start = time.time()
 
-    response_time = time.process_time() - start
+        response = retrieval_chain.invoke(
+            {"input": user_prompt}
+        )
 
-    st.subheader("Answer")
-    st.write(response["answer"])
+        elapsed = time.time() - start
 
-    st.caption(f"Response Time: {response_time:.2f} seconds")
+        st.subheader("Answer")
+        st.write(response["answer"])
 
-    with st.expander("Document Similarity Search"):
+        st.caption(f"Response Time: {elapsed:.2f} sec")
 
-        for i, doc in enumerate(response["context"]):
+        with st.expander("Retrieved Chunks"):
 
-            st.markdown(f"### Chunk {i+1}")
-            st.write(doc.page_content)
-            st.divider()
+            for i, doc in enumerate(response["context"]):
+                st.markdown(f"### Chunk {i+1}")
+                st.write(doc.page_content)
+                st.divider()
+
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
